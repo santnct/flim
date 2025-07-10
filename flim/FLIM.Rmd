@@ -1,0 +1,487 @@
+---
+title: "flim"
+output: html_document
+date: "2025-07-01"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+``` {r message=FALSE, warning=FALSE, include=FALSE}
+#Package
+library(readxl)
+library(tidyverse)
+library(psych)
+library(epitools)
+library(compareGroups)
+library(tableone)
+library(dplyr)
+library(table1)
+library(DescTools)
+library(stringr)
+library(writexl)
+library(flextable)
+
+library(gtsummary)
+library(emmeans)
+library(ggplot2)
+library(sjPlot) 
+library(effects)
+library(performance)
+library(stringr)
+
+```
+
+```{r}
+
+fl_em <- read_excel("FLIM-290425-Tri.xlsx", sheet = "em") 
+
+take_or<- fl_em%>% select(FK_MEPatientID,OR_date) %>% distinct()
+take_or$track<-1
+
+fl_or <- read_excel("FLIM-290425-Tri.xlsx", sheet = "or") 
+
+fl_or<- left_join(fl_or,take_or, by=c('female_smart_id'='FK_MEPatientID','OR_date'='OR_date'))
+fl_or<- fl_or %>% filter(track==1)
+fl_or %>%  count(female_smart_id) %>%
+  filter(n > 1) 
+```
+
+```{r}
+
+fl_or %>% select(m_diag) %>% group_by(m_diag) %>% tally()
+
+fl_or <- fl_or %>% mutate(f_diag_mod = case_when(
+    str_detect(f_diag,"ODT|ống dẫn|vòi") ~ "tubal",
+      str_detect(f_diag,"LNMTC") ~ "LNMTC",
+    str_detect(f_diag,"RLPN") ~ "RLPN",
+    str_detect(f_diag,"Bệnh nhân lớn tuổi|DTBT") ~ "DTBT",
+    str_detect(f_diag,"Khác|Không quan hệ được|Nguyên nhân khác|Quan hệ thưa|TTTON một chu kỳ thất bại|Tăng Prolactin máu") ~ "RLPN",
+    
+    TRUE ~ f_diag),
+    m_diag_mod = ifelse(m_diag=="Bình thường",1,0),
+    f_diag_mod = ifelse(f_diag_mod=="Bình thường" & m_diag_mod==1,"CRNN",f_diag_mod)
+
+    )
+
+fl_or <- fl_or %>%
+  mutate(
+    # Primary flags
+    DX_Dim_Ovar_Rsrv   = if_else(str_detect(f_diag_mod, "DTBT"), 1, 0),
+    DX_Endometriosis   = if_else(str_detect(f_diag_mod, "LNMTC"), 1, 0),
+    DX_Ovul_dysf       = if_else(str_detect(f_diag_mod, "RLPN"), 1, 0),
+    DX_Tubal_disease   = if_else(str_detect(f_diag_mod, "tubal"), 1, 0),
+    DX_Unknown         = if_else(str_detect(f_diag_mod, "CRNN"), 1, 0),
+    DX_PCOS            = if_else(str_detect(f_diag_mod, "PCOS"), 1, 0),
+    DX_MaleFactor      = if_else(str_detect(m_diag_mod, "0"), 1, 0),
+    DX_Uterine_factor  = 0,
+    DX_Anorexia        = 0,
+    DX_Cancer          = 0,
+    TX_Cancer          = 0
+  ) %>%
+  rowwise() %>%
+  mutate(
+    DX_Other = if_else(
+      sum(c_across(c(
+        DX_Dim_Ovar_Rsrv,
+        DX_Endometriosis,
+        DX_MaleFactor,
+        DX_Ovul_dysf,
+        DX_Tubal_disease,
+        DX_Unknown,
+        DX_Uterine_factor,
+        DX_PCOS,
+        DX_Anorexia,
+        DX_Cancer
+      ))) == 0,
+      1,
+      0
+    )
+  ) %>%
+  ungroup()
+
+```
+
+
+
+```{r}
+
+
+
+fl_or <- fl_or %>%
+  mutate(
+    Generic_Code=TreatmentCycle_ID,
+    em_frezze_total=as.numeric(em_frezze_total),
+    em_et_total=as.numeric(em_et_total))
+
+fl_or <- fl_or %>%mutate(
+    Cycle_Type = case_when(
+    (em_frezze_total > 0 & em_et_total >= 0) ~ "1",
+    TRUE ~ "No_em"))
+
+
+fl_or <- fl_or %>%mutate(
+    Donor_egg=EggDonor,
+    GC=0,
+    OR_date=as.Date(OR_date,format = "%y/%m/%d"),
+    Producer_Age= year(OR_date)-female_YOB,
+    Age_1st_Menstruation = year(last_mens_date)-female_YOB,
+    Prior_method_of_birth_control="Check",
+    Years_on_birth_control="Check",
+    Producer_BMI = round(ifelse(is.na(female_weight) | is.na(female_height) , NA,
+                                                    (ifelse(female_weight<female_height, female_weight/((female_height*female_height)/10000), female_height/((female_weight*female_weight)/10000)))),2),
+    Carrier_BMI="Not_av",
+    Producer_Race="Asian")
+    
+    
+ fl_or <- fl_or %>%
+  mutate(   
+   pregnancy_history = str_pad(as.character(PARA), width = 4, side = "left", pad = "0"),
+    para_T = as.integer(str_sub(pregnancy_history, 1, 1)),
+    para_P = as.integer(str_sub(pregnancy_history, 2, 2)),
+    para_A = as.integer(str_sub(pregnancy_history, 3, 3)),  # Abortions (SAB + TAB)
+    para_L = as.integer(str_sub(pregnancy_history, 4, 4)),
+
+    Gravidity = para_T + para_P + para_A + 1,  # Including current pregnancy
+    Parity = para_T + para_P,
+    prior_SAB_TAB = para_A,
+    Prior_SAB="Not_av",
+    Prior_TAB="Not_av",
+     start_date = as.Date(start_date),
+    hCG_date = as.Date(hCG_date),
+    duration_days = difftime(hCG_date, start_date, units = "days"),
+    trigger= name_trigger_type,
+   Sperm_Origin = case_when(
+    male_tech %in% c(25, 26, 27) ~ 1,
+    male_tech %in% c(28, 29, 30,34) ~ 2,
+    TRUE ~ 0),
+    Sperm_Source= ifelse(male_tech==35,1,0),
+    Sperm_Fresh_Frozen = case_when(
+    male_tech %in% c(23, 24, 26, 27, 29, 30) ~ 0,
+    TRUE ~ 1
+  ),
+  
+  USEndo="Not_av",
+Num18="Not_av",
+Num17="Not_av",
+Num16="Not_av",
+Num12_16= follicle_s12,
+Prog_Min="Not_av",
+Prog_Max="Not_av",
+E2_Max="Not_av",
+Sum_Eggs=opu,
+Sum_MII=no_icsi
+    
+  )
+
+ new_cols <- c(
+  "Cycle_Identifier", "Day3_FSH", "Day3_E2", "Fresh_Stim_Protocol", "CET_Cycle_Type",
+  "Prog_suppl", "Prog_Type", "CET_with_lupron", "Baseline_Endo", "E2_Max_Day",
+  paste0("E2_D", str_pad(2:25, width = 2, pad = "0"))
+)
+
+# Create and assign "check_smart"
+for (col in new_cols) {
+  fl_or[[col]] <- "check_smart"
+}
+
+fl_em <- fl_em %>%
+  mutate(
+    CC_Sample_Identifier=Note,
+    Oocyte_Sample_Identifier=embryo_id,
+    Oocyte_Video_Identifier=Note,
+    Fertilization_Status = case_when(
+    (em_D0_Oocyte %in% c("GV", "MI")) & is.na(em_D1_PNNo) ~ 0,
+    TRUE ~ 1),
+    Maturity_Annotation = case_when(
+    em_D0_Oocyte == "GV"  ~ 6,
+    em_D0_Oocyte == "MI"  ~ 7,
+    em_D0_Oocyte == "MII" ~ 10,
+    TRUE ~ NA_real_),
+    
+    Final_Fate= ifelse(str_detect(em_Result_Indication,"tec")==TRUE,1,0 ),
+    Fresh_fate=Final_Fate,
+    Fresh_O2=5,
+    Post_thaw_O2=5,
+    Freeze_protocol=1,
+    Number_of_freezes=1,
+    Day_Freeze=ifelse(str_detect(em_Result_Indication,"tec")==TRUE,em_Result_Day,NA),
+    Fert_HPI=0,
+    Fert_Status=  case_when(
+    em_D1_PNNo == "Deg"  ~ 0,
+    em_D1_PNNo == "1PN"  ~ 1,
+    em_D1_PNNo == "2PN" ~ 2,
+    em_D1_PNNo == "3PN" ~ 3,
+    em_D1_PNNo == ">3PN" ~ 4,
+    em_D1_PNNo == "APOPTOSIS" ~ 5,
+    em_D1_PNNo == "1TB" ~ 10,
+    em_D1_PNNo == "2TB" ~ 10,
+    em_D1_PNNo == ">2TB" ~ 10,
+    TRUE ~ NA_real_),
+    D3_HPI=0,
+    D3_Cnum=em_D3_Cell,
+    D3_num = coalesce(em_D3_Cell, em_D3_Other, em_D3_Note),
+    D3_Frag = case_when(
+      is.na(em_D3_Frag) ~ NA_integer_,
+      TRUE ~ as.numeric(gsub("frag", "", em_D3_Frag))  # extract numeric part
+    ),
+    D3_Frag = case_when(
+      is.na(D3_Frag) ~ NA_integer_,
+      D3_Frag == 0 ~ 0,
+      D3_Frag >= 1 & D3_Frag <= 10 ~ 1,
+      D3_Frag >= 11 & D3_Frag <= 25 ~ 2,
+      D3_Frag >= 26 & D3_Frag < 50 ~ 3,
+      D3_Frag >= 50 ~ 4,
+      TRUE ~ NA_integer_
+    ),
+    D3_Sym="Not_av",
+    D3_PMD="Not_av",
+    D3_G="Not_av",
+    D3_V= ifelse(str_detect(em_D3_Note,"Vac")==TRUE,1,0),
+    D3_MNB="Not_av",
+    D5_HPI="Not_av",
+    D5_Stage=em_D5_Expand,
+    D5_ICM=em_D5_ICM,
+    D5_TE=em_D5_TE,
+    D5_St4_Quality="Not_av",
+    D6_HPI="Not_av",
+    D6_Stage=em_D6_Expand,
+    D6_ICM=em_D6_ICM,
+    D6_TE=em_D6_TE,
+    D6_St4_Quality="Not_av",
+    Biopsy=ifelse(is.na(type_PGT)==TRUE,0,1),
+    Biopsy_day= em_frozen_day,
+    TBR=0,
+    PGT_gender="Not_av",
+    PGT_ploidy=ifelse(str_detect(MEGeneticTestingEmbryoResultEN,"Euploidy")==TRUE,2,1),
+    SGD="Not_av",
+    Translocation=1,
+    HLA_matching=4,
+    Xfer_HPI="Not_av",
+    
+    
+    
+  )
+
+```
+
+
+```{r}
+
+fl_fet <- read_excel("FLIM-290425-Tri.xlsx", sheet = "fet") 
+fl_fet<- left_join(fl_fet,take_or, by=c('female_smart_id'='FK_MEPatientID','OR_date'='OR_date'))
+fl_fet<- fl_fet %>% filter(track==1)
+
+
+fl_fet<- fl_fet %>% mutate(
+                          weight1_mod= ifelse(weight1==0,NA,ifelse(weight1>500,weight1,weight1*1000)),
+                          weight2_mod= ifelse(weight2==0,NA,ifelse(weight2>500,weight2,weight2*1000)),
+                          
+                          gqe_fet= em_trans_g1+em_trans_g2,
+                           lbr_code = ifelse(StopWeek >22| weight1_mod>0,1,0),
+                           ong_code = ifelse(lbr_code==1,1,
+                                             ifelse(StopWeek<12,0,
+                                                ifelse(no_fetal_heart>0,1,0))),
+                           cli_code = ifelse(ong_code==1 | no_ectopic>0,1,
+                                             ifelse(StopWeek<=4,0,
+                                                ifelse(no_ges_sac>0 ,1,0))),
+                           beta_code1 = ifelse(cli_code==1|beta_value>24|beta_code>1,1,0),
+                           ectopic= ifelse(lbr_code==1,0,ifelse(no_ectopic>0,1,0)),
+                           mul_preg= ifelse(cli_code==1 & no_fetal_heart>1,1,0),
+                           ipr = ifelse(no_em_trans==0,0,no_ges_sac/no_em_trans *100),
+                           tw= ifelse(lbr_code==1 & weight2 >0,1,0),
+                           miss12= ifelse(StopWeek==0 | is.na(StopWeek) | no_ectopic>0,0, 
+                                        ifelse(cli_code==1 & StopWeek <13,1,0)),
+                           miss24= ifelse(StopWeek==0 | is.na(StopWeek) | no_ectopic>0,0,
+                                          ifelse(StopWeek >12 & StopWeek <=22,1,0)),
+                      
+                           )
+
+fl_fet <- fl_fet %>%
+  mutate(
+  Oocyte_Sample_Identifier=embryo_id,
+  OR_date=as.Date(OR_date,format = "%y/%m/%d"),
+  fet_date=as.Date(fet_date,format = "%y/%m/%d"),
+  Patient_Age=year(fet_date)-female_YOB,
+  Number_embryos_transferred=no_em_trans,
+  Day_post_transfer_of_first_beta_hCG="Not_av",
+  First_beta_hCG_value=beta_value,
+  Day_post_transfer_of_second_beta_hCG="Not_av",
+  Second_beta_hCG_value="Not_av",
+  Day_post_transfer_of_third_beta_hCG="Not_av",
+  Third_beta_hCG_value="Not_av",
+  Live_birth=lbr_code,
+  Ongoing_pregnancy=ong_code,
+  Clinical_pregnancy=cli_code,
+  FH_12_wk="Not_av",
+  babies_24_wks="Not_av",
+  Fetuses_SR=0,
+  GA=birth_week,
+  Out_fetus1=ifelse(lbr_code==0,0,
+                    ifelse(weight1_mod>2000,1,"2=SAB; 3=Stillborn; 4=TAB, 5=major congenital anomaly")),
+  Gender_baby1= ifelse(weight1>0,gender1,NA),
+  Wt_baby1= ifelse(weight1>0,weight1_mod,NA),
+  Out_fetus2= ifelse(tw==0,0,
+                    ifelse(weight1_mod>2000,1,"2=SAB; 3=Stillborn; 4=TAB, 5=major congenital anomaly")),
+  Gender_baby2=ifelse(weight2>0,gender2,NA),
+  Wt_baby2=ifelse(weight2>0,weight2_mod,NA),
+  Out_fetus3="Not_av",
+  Gender_baby3="Not_av",
+  Wt_baby3 ="Not_av",
+  )
+
+
+```
+
+
+```{r}
+
+mutated_cols_or <- c(
+  "female_smart_code",
+  "OR_date",
+  "Generic_Code",
+  "em_frezze_total",
+  "em_et_total",
+  "Cycle_Type",
+  "Donor_egg",
+  "GC",
+  "Producer_Age",
+  "Age_1st_Menstruation",
+  "Prior_method_of_birth_control",
+  "Years_on_birth_control",
+  "Producer_BMI",
+  "Carrier_BMI",
+  "Producer_Race",
+  "pregnancy_history",
+  "para_T",
+  "para_P",
+  "para_A",
+  "para_L",
+  "Gravidity",
+  "Parity",
+  "prior_SAB_TAB",
+  "Prior_SAB",
+  "Prior_TAB",
+  "start_date",
+  "hCG_date",
+  "duration_days",
+  "trigger",
+  "Sperm_Origin",
+  "Sperm_Source",
+  "Sperm_Fresh_Frozen",
+  "USEndo",
+  "Num18",
+  "Num17",
+  "Num16",
+  "Num12_16",
+  "Prog_Min",
+  "Prog_Max",
+  "E2_Max",
+  "Sum_Eggs",
+  "Sum_MII",
+  new_cols 
+)
+
+
+fl_or_export <- fl_or %>% select(mutated_cols_or)
+write_xlsx(fl_or_export,"fl_or_export.xlsx")
+
+
+```
+
+
+```{r}
+
+mutated_cols_em <- c(
+  "female_smart_code",
+  "OR_date",
+  "FET_date",
+  "CC_Sample_Identifier",
+  "Oocyte_Sample_Identifier",
+  "Oocyte_Video_Identifier",
+  "Fertilization_Status",
+  "Maturity_Annotation",
+  "Final_Fate",
+  "Fresh_fate",
+  "Fresh_O2",
+  "Post_thaw_O2",
+  "Freeze_protocol",
+  "Number_of_freezes",
+  "Day_Freeze",
+  "Fert_HPI",
+  "Fert_Status",
+  "D3_HPI",
+  "D3_Cnum",
+  "D3_num",
+  "D3_Frag",
+  "D3_Sym",
+  "D3_PMD",
+  "D3_G",
+  "D3_V",
+  "D3_MNB",
+  "D5_HPI",
+  "D5_Stage",
+  "D5_ICM",
+  "D5_TE",
+  "D5_St4_Quality",
+  "D6_HPI",
+  "D6_Stage",
+  "D6_ICM",
+  "D6_TE",
+  "D6_St4_Quality",
+  "Biopsy",
+  "Biopsy_day",
+  "TBR",
+  "PGT_gender",
+  "PGT_ploidy",
+  "SGD",
+  "Translocation",
+  "HLA_matching",
+  "Xfer_HPI"
+)
+
+fl_em_export<- fl_em %>% select(mutated_cols_em)
+write_xlsx(fl_em_export,"fl_em_export.xlsx")
+
+
+```
+
+```{r}
+
+mutated_cols_fet <- c(
+  "Oocyte_Sample_Identifier",
+  "OR_date",
+  "fet_date",
+  "Patient_Age",
+  "Number_embryos_transferred",
+  "Day_post_transfer_of_first_beta_hCG",
+  "First_beta_hCG_value",
+  "Day_post_transfer_of_second_beta_hCG",
+  "Second_beta_hCG_value",
+  "Day_post_transfer_of_third_beta_hCG",
+  "Third_beta_hCG_value",
+  "Live_birth",
+  "Ongoing_pregnancy",
+  "Clinical_pregnancy",
+  "FH_12_wk",
+  "babies_24_wks",
+  "Fetuses_SR",
+  "GA",
+  "Out_fetus1",
+  "Gender_baby1",
+  "Wt_baby1",
+  "Out_fetus2",
+  "Gender_baby2",
+  "Wt_baby2",
+  "Out_fetus3",
+  "Gender_baby3",
+  "Wt_baby3"
+)
+
+fl_fet_export <- fl_fet %>% select(mutated_cols_fet)
+write_xlsx(fl_fet_export,"fl_fet_export.xlsx")
+
+
+```
+
