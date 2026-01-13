@@ -35,12 +35,12 @@ library(stringr)
 
 ```{r}
 
-fl_em <- read_excel("FLIM-290425-Tri.xlsx", sheet = "em") 
+fl_em <- read_excel("FLIM-290425-Tri.xlsx", sheet = "em_raw") 
 
 take_or<- fl_em%>% select(FK_MEPatientID,OR_date) %>% distinct()
 take_or$track<-1
 
-fl_or <- read_excel("FLIM-290425-Tri.xlsx", sheet = "or") 
+fl_or <- read_excel("FLIM-290425-Tri.xlsx", sheet = "or_raw") 
 
 fl_or<- left_join(fl_or,take_or, by=c('female_smart_id'='FK_MEPatientID','OR_date'='OR_date'))
 fl_or<- fl_or %>% filter(track==1)
@@ -137,13 +137,13 @@ fl_or <- fl_or %>%mutate(
     
  fl_or <- fl_or %>%
   mutate(   
-   pregnancy_history = str_pad(as.character(PARA), width = 4, side = "left", pad = "0"),
+   pregnancy_history = str_pad(as.character(new_para), width = 4, side = "left", pad = "0"),
     para_T = as.integer(str_sub(pregnancy_history, 1, 1)),
     para_P = as.integer(str_sub(pregnancy_history, 2, 2)),
     para_A = as.integer(str_sub(pregnancy_history, 3, 3)),  # Abortions (SAB + TAB)
     para_L = as.integer(str_sub(pregnancy_history, 4, 4)),
 
-    Gravidity = para_T + para_P + para_A + 1,  # Including current pregnancy
+    Gravidity = para_T + para_P + para_A ,  # Including current pregnancy
     Parity = para_T + para_P,
     prior_SAB_TAB = para_A,
     Prior_SAB="Not_av",
@@ -354,6 +354,7 @@ mutated_cols_or <- c(
   "Carrier_BMI",
   "Producer_Race",
   "pregnancy_history",
+  'date_para',
   "para_T",
   "para_P",
   "para_A",
@@ -380,12 +381,24 @@ mutated_cols_or <- c(
   "E2_Max",
   "Sum_Eggs",
   "Sum_MII",
-  new_cols 
+  all_of(new_cols) ,
+  'DX_Dim_Ovar_Rsrv',
+  'DX_Endometriosis',
+  'DX_Ovul_dysf',
+  'DX_Tubal_disease',
+  'DX_Unknown',
+  'DX_PCOS',
+  'DX_MaleFactor',
+  'DX_Uterine_factor',
+  'DX_Cancer',
+  'TX_Cancer',
+  'DX_Other',
+  'f_diag_mod'
 )
 
 
 fl_or_export <- fl_or %>% select(mutated_cols_or)
-write_xlsx(fl_or_export,"fl_or_export.xlsx")
+write_xlsx(fl_or_export,"fl_or_export_v3.xlsx")
 
 
 ```
@@ -441,11 +454,157 @@ mutated_cols_em <- c(
   "Xfer_HPI"
 )
 
-fl_em_export<- fl_em %>% select(mutated_cols_em)
-write_xlsx(fl_em_export,"fl_em_export.xlsx")
+fl_em_export<- fl_em %>% select(mutated_cols_em,embryo_id)
+#write_xlsx(fl_em_export,"fl_em_export_v2.xlsx")
 
+
+tl_anno <- read_excel("fl_em_export_v2.xlsx", sheet = "tl_ann0") 
+
+tl_anno_wide<- tl_anno %>%  select(FK_MEVisitEmbryoID,MEEmbryoParamNo, MEVisitEmbryoTimelapseAnnotation) %>% pivot_wider(names_from = MEEmbryoParamNo,   # Column to use as new column names
+  values_from = MEVisitEmbryoTimelapseAnnotation )
+
+
+fl_em_export_v2<- left_join(fl_em_export, tl_anno_wide, by=c('embryo_id'='FK_MEVisitEmbryoID'))
+
+#write_xlsx(fl_em_export_v2,"fl_em_export_v3.xlsx")
+
+fl_em_export_v2_PN <- fl_em_export_v2 %>% filter(str_detect(Oocyte_Video_Identifier,'FPN'))
+
+fl_em_export_v2_PN<- fl_em_export_v2_PN %>% select(CC_Sample_Identifier,Oocyte_Sample_Identifier,t2PN,tPNf,t2,t3,t4,t5,t8,tSC,tM,tSB,tB,tHN) %>% rename(code_coc=CC_Sample_Identifier)
 
 ```
+
+
+
+```{r}
+
+tl_anno_TB <- read_excel("fl_em_export_v2.xlsx", sheet = "tl_ann_TB", guess_max = 100000,                  # look deeper before deciding types
+  na = c("", "NA", "/  /")) %>% rename("code_coc"="Code cumulus")#take site TB  
+em_id <- read_excel("fl_em_export_v2.xlsx", sheet = "em", guess_max = 100000,           
+  na = c("", "NA", "/  /")) 
+em_id<- em_id %>% select(Oocyte_Sample_Identifier,	Oocyte_Video_Identifier)
+
+tl_anno_TB<- left_join(tl_anno_TB, em_id, by=c('code_coc'='Oocyte_Video_Identifier'))
+tl_anno_TB
+
+cols <- c(
+  "tPNa","tPNf","T2","T3","T4","T5","T8",
+  "tSC","tM","tSB","tB","tBH (blast hatching)"
+)
+
+tl_anno_TB_use <- tl_anno_TB %>%
+  mutate(all_missing = if_all(all_of(cols), is.na))
+tl_anno_TB_use<- tl_anno_TB_use %>% filter(all_missing==FALSE)
+
+tl_anno_TB_use_clean_v1 <- tl_anno_TB_use %>% filter(NO<985)
+tl_anno_TB_use_clean_v1<- tl_anno_TB_use_clean_v1 %>% rename( "t2PN"="tPNa","t2"="T2","t3"="T3","t4"="T4","t5"="T5","t8"="T8",
+  "tHN"="tBH (blast hatching)") %>% select(code_coc,Oocyte_Sample_Identifier,t2PN,tPNf,t2,t3,t4,t5,t8,tSC,tM,tSB,tB,tHN)
+
+tl_anno_TB_use_clean <- tl_anno_TB_use %>% filter(NO>=985)
+
+
+
+# Duplicate first
+tl_anno_TB_use_clean[paste0(cols, "_original")] <- tl_anno_TB_use_clean[cols]
+
+tl_anno_TB_use_clean <- tl_anno_TB_use_clean %>%
+  mutate(
+    across(
+      all_of(cols),
+      ~ {
+        x <- as.character(.)                  # ensure character
+        x <- trimws(x)                        # remove spaces
+        x <- gsub("–", "-", x)                # normalize long dash
+        num <- sub(".*-\\s*(.*)$", "\\1", x)  # extract after last hyphen
+        num <- gsub(",", ".", num)            # convert comma decimals
+        suppressWarnings(as.numeric(num))     # numeric conversion
+      }
+    )
+  )
+
+tl_anno_TB_use_clean <- tl_anno_TB_use_clean %>%
+  select(-ends_with("_original"))
+
+tl_anno_TB_use_clean <- tl_anno_TB_use_clean %>% rename( "t2PN"="tPNa","t2"="T2","t3"="T3","t4"="T4","t5"="T5","t8"="T8",
+  "tHN"="tBH (blast hatching)")
+
+tl_anno_TB_use_clean<- tl_anno_TB_use_clean %>% select(code_coc,Oocyte_Sample_Identifier,t2PN,tPNf,t2,t3,t4,t5,t8,tSC,tM,tSB,tB,tHN)
+
+
+tl_anno_TB_final <- rbind(fl_em_export_v2_PN,tl_anno_TB_use_clean_v1,tl_anno_TB_use_clean)
+
+
+split_time <- function(x) {
+  h <- suppressWarnings(as.numeric(x))
+
+  # If NA → keep NA
+  if (all(is.na(h))) {
+    return(tibble::tibble(
+      day = rep(NA_integer_, length(h)),
+      hour = rep(NA_integer_, length(h)),
+      min = rep(NA_integer_, length(h))
+    ))
+  }
+
+  day <- hour <- minute <- rep(NA_integer_, length(h))
+
+  ## ---- CASE 1: < 24 hours → 0; hour; min ----
+  idx1 <- !is.na(h) & h < 24
+  hour[idx1]  <- floor(h[idx1])
+  minute[idx1] <- round((h[idx1] - hour[idx1]) * 60)
+  day[idx1]   <- 0
+
+  ## ---- CASE 2: ≥ 24 hours → normal day/hour/min ----
+  idx2 <- !is.na(h) & h >= 24
+  day[idx2]   <- floor(h[idx2] / 24)
+  rem         <- h[idx2] - day[idx2]*24
+  hour[idx2]  <- floor(rem)
+  minute[idx2] <- round((rem - hour[idx2]) * 60)
+
+  ## Fix rounding minute = 60
+  idx60 <- !is.na(minute) & minute == 60
+  hour[idx60]  <- hour[idx60] + 1L
+  minute[idx60] <- 0L
+
+  ## Fix hour = 24
+  idx24 <- !is.na(hour) & hour == 24
+  day[idx24]   <- day[idx24] + 1L
+  hour[idx24]  <- 0L
+
+  tibble::tibble(day = day, hour = hour, min = minute)
+}
+
+time_cols <- c(
+  "t2PN","tPNf","t2","t3","t4","t5","t8",
+  "tSC","tM","tSB","tB","tHN"
+)
+
+for (nm in time_cols) {
+  tmp <- split_time(tl_anno_TB_final[[nm]])
+  tl_anno_TB_final[[paste0(nm, "_day")]]  <- tmp$day
+  tl_anno_TB_final[[paste0(nm, "_hour")]] <- tmp$hour
+  tl_anno_TB_final[[paste0(nm, "_min")]]  <- tmp$min
+}
+
+
+for (nm in time_cols) {
+  d <- tl_anno_TB_final[[paste0(nm, "_day")]]
+  h <- tl_anno_TB_final[[paste0(nm, "_hour")]]
+  m <- tl_anno_TB_final[[paste0(nm, "_min")]]
+
+  tl_anno_TB_final[[paste0(nm, "_final")]] <- ifelse(
+    is.na(d) & is.na(h) & is.na(m),
+    NA_character_,
+    paste(d, h, m, sep = ";")
+  )
+}
+
+TL_TB_check<-tl_anno_TB_final %>% select(code_coc,Oocyte_Sample_Identifier,all_of(time_cols),ends_with("_final"))
+write_xlsx(TL_TB_check,"TL_TB_check.xlsx")
+
+```
+
+
 
 ```{r}
 
